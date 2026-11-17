@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 import theme
 from app_info import DEFAULT_RECORD_DIR, DEFAULT_SNAPSHOT_DIR
 from camera_models import (
-    LAYOUTS, MODELS, lenses_of, probe_stream, rtsp_url, scan_lan, setting, split_rtsp_uri,
+    AUTH_ERR, LAYOUTS, MODELS, auth_hint, lenses_of, probe_stream, rtsp_url, scan_lan, setting, split_rtsp_uri,
 )
 from onvif_ptz import discover_streams
 
@@ -140,6 +140,7 @@ class SettingsDialog(QDialog):
         self.bridge = _Bridge()
         self.bridge.done.connect(self._on_bg)
         self._busy = set()
+        self._onvif_ok: set[int] = set()  # กล้องที่ตรวจหาผ่าน ONVIF สำเร็จ (รหัสถูก)
 
         tabs = QTabWidget()
         tabs.addTab(self._build_cameras_tab(), "กล้อง")
@@ -480,7 +481,7 @@ class SettingsDialog(QDialog):
             self._loading = False
         c["name"] = self.f_name.text().strip()
         c["ip"] = self.f_ip.text().strip()
-        c["username"] = self.f_user.text()
+        c["username"] = self.f_user.text().strip()
         c["password"] = self.f_pw.text()
         c["ptz"] = self.f_ptz.isChecked()
         if model == "custom":
@@ -565,7 +566,10 @@ class SettingsDialog(QDialog):
             if self.cur is not self._test_cam:
                 return
             if kind == "err":
-                self._set_result(f"ต่อไม่ได้: {val}", "err")
+                msg = f"ต่อไม่ได้: {val}"
+                if str(val) == AUTH_ERR:
+                    msg += "\n" + auth_hint(self.cur, id(self.cur) in self._onvif_ok)
+                self._set_result(msg, "err")
                 self.preview.setText("ไม่มีภาพ")
                 return
             tr, img = val
@@ -603,7 +607,35 @@ class SettingsDialog(QDialog):
 
     def _apply_detect(self, info):
         c = self.cur
+        self._onvif_ok.add(id(c))
         streams = info["streams"]
+        lst = ", ".join(f"{w}×{h}" for _, w, h, _ in streams)
+        found = (f"✓ เจอสตรีม {len(streams)} ชุด ({lst}) ผ่าน ONVIF พอร์ต {info['onvif_port']}"
+                 f"{' · หมุนได้' if info['ptz'] else ''}")
+        model = c.get("model", "custom")
+        tapo = info["onvif_port"] == 2020 or "stream1" in streams[0][3]
+        # รุ่นสำเร็จรูปที่เลือกไว้ตรงกับกล้องอยู่แล้ว → คงรุ่นไว้ (ONVIF เห็นแค่เลนส์แรก เปลี่ยนเป็น custom จะหายไปหนึ่งเลนส์)
+        if model != "custom" and (model.startswith("tapo") == tapo):
+            c["ptz"] = info["ptz"]
+            self._load_form()
+            self._set_result(found + f"\nรุ่นที่เลือก ({MODELS[model]['label'].split(' (')[0]}) ตรงกับกล้องแล้ว "
+                             "ไม่ต้องเปลี่ยนค่า · กด \"ทดสอบภาพ\" เพื่อดูภาพ", "ok")
+            r = self._current_row_widget()
+            if r:
+                r.update_from(c)
+            return
+        if tapo:  # กล้อง Tapo → ใช้รุ่นสำเร็จรูป (ได้แผงไฟด้วย) และบอกให้เลือก 2 เลนส์ถ้าเป็นรุ่นนั้น
+            c.update({"model": "tapo_single", "ptz": info["ptz"]})
+            for k in ("port", "hd_path", "sd_path", "transport", "layout", "onvif_port"):
+                c.pop(k, None)
+            self._load_form()
+            self._set_result(found + "\nเป็นกล้อง Tapo – ตั้งเป็น \"Tapo เลนส์เดียว\" ให้แล้ว · "
+                             "ถ้าเป็นรุ่น 2 เลนส์ (เช่น C545D) ให้เปลี่ยนรุ่นเป็น \"Tapo – 2 เลนส์\" · "
+                             "กด \"ทดสอบภาพ\" เพื่อดูภาพ", "ok")
+            r = self._current_row_widget()
+            if r:
+                r.update_from(c)
+            return
         hd, sd = streams[0], streams[1 if len(streams) > 2 else -1]  # SD = ชุดกลาง (ไม่เล็กเกินไป)
         port, hd_path = split_rtsp_uri(hd[3])
         _, sd_path = split_rtsp_uri(sd[3])
@@ -612,7 +644,6 @@ class SettingsDialog(QDialog):
                   "layout": "split" if hd[2] > hd[1] * 1.5 else "single",  # สูงกว่ากว้างมาก = 2 เลนส์ซ้อนกัน
                   "onvif_port": info["onvif_port"], "ptz": info["ptz"]})
         self._load_form()
-        lst = ", ".join(f"{w}×{h}" for _, w, h, _ in streams)
         extra = " · ดูเหมือนกล้อง 2 เลนส์ซ้อนบน-ล่าง จึงแบ่งเป็น 2 ช่องให้" if c["layout"] == "split" else ""
         self._set_result(f"✓ เจอสตรีม {len(streams)} ชุด ({lst}) ผ่าน ONVIF พอร์ต {info['onvif_port']}"
                          f"{' · หมุนได้' if info['ptz'] else ''}{extra}\nกด \"ทดสอบภาพ\" เพื่อดูภาพ", "ok")

@@ -291,6 +291,36 @@ def scan_lan(progress=None, timeout=0.5) -> list[dict]:
 
 
 # ---------------------------------------------------------------- ทดสอบสตรีม
+AUTH_ERR = "Username หรือ Password ไม่ถูกต้อง"
+
+
+def is_auth_error(e) -> bool:
+    low = str(e).lower()
+    return "401" in low or "unauthorized" in low
+
+
+def is_tapo(cam: dict) -> bool:
+    return str(cam.get("model", "")).startswith("tapo") or int(cam.get("onvif_port") or 0) == 2020
+
+
+def auth_hint(cam: dict, onvif_ok: bool = False) -> str:
+    """คำแนะนำเมื่อกล้องตอบ 401 – ใช้ในหน้าตั้งค่า"""
+    tips = []
+    if is_tapo(cam):
+        if onvif_ok:
+            tips.append("ตรวจหาอัตโนมัติ (ONVIF) ใช้รหัสนี้ได้ แสดงว่ารหัสถูก แต่กล้องไม่ให้ดูภาพแบบ RTSP")
+        tips.append("แอป Tapo → ฉัน (Me) → Tapo Lab → เปิด \"Third-Party Compatibility\" "
+                    "(ความเข้ากันได้กับอุปกรณ์อื่น) แล้วรอกล้องรีสตาร์ท ~1 นาที")
+        tips.append("ใช้ \"บัญชีกล้อง (Camera Account)\" จากแอป Tapo → กล้อง → ⚙ → ตั้งค่าขั้นสูง → บัญชีกล้อง "
+                    "ไม่ใช่อีเมล/รหัสบัญชี TP-Link")
+        tips.append("ถ้าลองผิดหลายครั้ง กล้องอาจล็อกชั่วคราว ~30 นาที – เปลี่ยนรหัสแล้วรอสักพักค่อยทดสอบ")
+    else:
+        tips.append("ตรวจตัวพิมพ์เล็ก/ใหญ่ และดูว่ามีช่องว่างหน้า-หลังรหัสไหม")
+    if (cam.get("password") or "") != (cam.get("password") or "").strip():
+        tips.insert(0, "รหัสผ่านมีช่องว่างอยู่หน้าหรือท้าย – ลองลบออก")
+    return "\n".join("• " + t for t in tips)
+
+
 def probe_stream(url: str, transports=("tcp", "udp"), timeout=12.0):
     """เปิดสตรีมแล้วถอดรหัสหนึ่งภาพ → (transport ที่ใช้ได้, ภาพ BGR) หรือโยน RuntimeError พร้อมเหตุผล"""
     import av  # noqa: PLC0415
@@ -307,8 +337,8 @@ def probe_stream(url: str, transports=("tcp", "udp"), timeout=12.0):
         except Exception as e:  # noqa: BLE001
             msg = _hide_pw(e)
             low = str(e).lower()
-            if "401" in low or "unauthorized" in low:
-                raise RuntimeError("Username หรือ Password ไม่ถูกต้อง") from None
+            if is_auth_error(e):
+                raise RuntimeError(AUTH_ERR) from None
             if "404" in low or "not found" in low:
                 last = "ไม่พบ path ของสตรีม (รุ่นไม่ตรง?)"
             elif time.time() - t0 >= timeout - 1:

@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 
 import theme  # noqa: E402
 
-from camera_models import FFMPEG_OPTS, _hide_pw, expand_cameras, frame_to_qimage, migrate, rtsp_url  # noqa: E402
+from camera_models import FFMPEG_OPTS, _hide_pw, expand_cameras, is_auth_error, frame_to_qimage, migrate, rtsp_url  # noqa: E402
 from light_control import LightPanel  # noqa: E402
 from onvif_ptz import OnvifError, OnvifPTZ  # noqa: E402
 
@@ -190,6 +190,12 @@ class StreamWorker(QThread):
                 container = av.open(self.url, options=FFMPEG_OPTS[tr], timeout=(20 if tr == "udp" else 8, 8))
             except Exception as e:  # noqa: BLE001
                 self._ti += 1
+                if is_auth_error(e):
+                    # รหัสผิด: ลองถี่ๆ ไม่ช่วย และทำให้กล้องบางรุ่น (Tapo) ล็อกชั่วคราว → เว้น 60 วินาที
+                    self.status.emit("เชื่อมต่อไม่ได้ – กล้องไม่รับ Username/Password (401)\n"
+                                     "ไปที่ ตั้งค่า → เลือกกล้อง → ทดสอบภาพ เพื่อดูวิธีแก้ · จะลองใหม่ใน 60 วินาที")
+                    self._sleep(60)
+                    continue
                 self.status.emit(f"เชื่อมต่อไม่ได้ ({_hide_pw(e)}) – จะลองใหม่ใน 5 วินาที")
                 self._sleep(5)
                 continue
@@ -284,6 +290,10 @@ class CameraTile(QFrame):
         head = QHBoxLayout()
         head.setContentsMargins(12, 7, 10, 7)
         head.setSpacing(7)
+        self.back_btn = theme.btn("ดูทุกกล้อง", "left", kind="ghost", tip="กลับไปดูแบบตาราง (Esc)")
+        self.back_btn.clicked.connect(lambda: self.double_clicked.emit(self))
+        self.back_btn.hide()
+        head.addWidget(self.back_btn)
         head.addWidget(self.dot)
         head.addWidget(self.title)
         head.addStretch()
@@ -716,6 +726,11 @@ class MainWindow(QMainWindow):
         bar.addWidget(app_title)
         bar.addSpacing(6)
         bar.addWidget(self.count_pill)
+        self.btn_back = theme.btn("กลับไปดูทุกกล้อง", "left", kind="primary", tip="กลับไปดูแบบตาราง (Esc)")
+        self.btn_back.clicked.connect(lambda: self.focused and self.toggle_focus(self.focused))
+        self.btn_back.hide()
+        bar.addSpacing(6)
+        bar.addWidget(self.btn_back)
         bar.addSpacing(14)
         bar.addLayout(seg)
         bar.addSpacing(10)
@@ -873,6 +888,10 @@ class MainWindow(QMainWindow):
             self.grid.removeWidget(t)
             t.hide()
         shown = [self.focused] if self.focused else self.tiles
+        self.btn_back.setVisible(self.focused is not None)
+        for t in self.tiles:
+            t.back_btn.setVisible(t is self.focused)
+            t.setToolTip("" if self.focused else "ดับเบิลคลิกเพื่อขยายดูกล้องนี้")
         cols = max(1, math.ceil(math.sqrt(len(shown))))  # 1→1, 2-4→2, 5-9→3 คอลัมน์
         for i, t in enumerate(shown):
             self.grid.addWidget(t, i // cols, i % cols)
@@ -966,7 +985,10 @@ class MainWindow(QMainWindow):
         self.showNormal() if self.isFullScreen() else self.showFullScreen()
 
     def exit_fullscreen(self):
-        if self.isFullScreen():
+        """Esc: ถ้ากำลังขยายดูกล้องเดียว → กลับไปตาราง ก่อน · กดอีกครั้งจึงออกจากเต็มจอ"""
+        if self.focused is not None:
+            self.toggle_focus(self.focused)
+        elif self.isFullScreen():
             self.showNormal()
 
     def _mark_active(self):

@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "LAN Camera Viewer"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 APP_ID = "LANCameraViewer"
 GITHUB_REPO = "iitopfii/lan-camera-viewer"  # ใช้ตรวจอัปเดตจาก GitHub Releases
 
