@@ -10,7 +10,7 @@ if errorlevel 1 goto nopython
 if errorlevel 1 goto failed
 goto config
 :check
-"%VENV%\Scripts\python.exe" -c "import av, PySide6, pytapo" 2>nul
+"%VENV%\Scripts\python.exe" -c "import av, PySide6, pytapo, websockets, cryptography" 2>nul
 if errorlevel 1 (
   echo Installing new libraries...
   "%VENV%\Scripts\python.exe" -m pip install -r requirements.txt

@@ -5,6 +5,8 @@ Yoosee สั่งไฟได้เฉพาะผ่านแอป/คลา
 """
 from __future__ import annotations
 
+import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QObject, Qt, Signal
@@ -29,6 +31,20 @@ class LightError(Exception):
     pass
 
 
+# จำไว้ข้ามการเปิดหน้าต่างใหม่: ห้ามล็อกอินซ้ำระหว่างกล้องล็อก หรือด้วยรหัสที่รู้ว่าผิด
+# (ทุกครั้งที่ลองนับเป็นความพยายามที่ผิด ทำให้กล้องล็อกนานขึ้นเรื่อยๆ)
+_LOCKED_UNTIL: dict[str, float] = {}
+_BAD_PASSWORD: dict[str, str] = {}
+
+
+def _lock_message(ip: str) -> str | None:
+    left = _LOCKED_UNTIL.get(ip, 0) - time.time()
+    if left <= 0:
+        return None
+    return (f"กล้องล็อกชั่วคราวเพราะรหัสผิดหลายครั้ง – รออีกประมาณ {max(1, round(left / 60))} นาที "
+            "(ระหว่างนี้โปรแกรมจะไม่ลองเชื่อมต่อ เพื่อไม่ให้ล็อกนานขึ้น)")
+
+
 class TapoLight:
     """ตัวควบคุมไฟของกล้อง Tapo หนึ่งตัว (เชื่อมต่อครั้งแรกตอนใช้งาน)"""
 
@@ -42,16 +58,28 @@ class TapoLight:
         if self.t is None:
             if not self.cloud_password:
                 raise LightError("ยังไม่ได้ใส่รหัสบัญชี TP-Link (ตั้งค่า → ทั่วไป)")
+            locked = _lock_message(self.ip)
+            if locked:
+                raise LightError(locked)
+            if _BAD_PASSWORD.get(self.ip) == self.cloud_password:
+                raise LightError("รหัสบัญชี TP-Link ไม่ถูกต้อง – แก้ในตั้งค่า → ทั่วไป แล้วจะลองใหม่ให้")
             from pytapo import Tapo  # noqa: PLC0415
             try:
                 self.t = Tapo(self.ip, "admin", self.cloud_password, printWarnInformation=False)
             except Exception as e:  # noqa: BLE001
                 msg = str(e)
-                if "auth" in msg.lower() or "password" in msg.lower():
-                    raise LightError("รหัสบัญชี TP-Link ไม่ถูกต้อง (ใช้รหัสที่ล็อกอินแอป Tapo)") from None
-                if "suspended" in msg.lower() or "temporary" in msg.lower():
-                    raise LightError("กล้องล็อกชั่วคราวเพราะรหัสผิดหลายครั้ง – รอ 30 นาทีแล้วลองใหม่") from None
+                low = msg.lower()
+                if "suspension" in low or "suspended" in low or "temporary" in low or "-40404" in low:
+                    m = re.search(r"(\d+)\s*seconds", msg)
+                    _LOCKED_UNTIL[self.ip] = time.time() + (int(m.group(1)) if m else 30 * 60) + 5
+                    raise LightError(_lock_message(self.ip)) from None
+                if "auth" in low or "password" in low:
+                    _BAD_PASSWORD[self.ip] = self.cloud_password
+                    raise LightError("รหัสบัญชี TP-Link ไม่ถูกต้อง (ใช้รหัสที่ล็อกอินแอป Tapo · "
+                                     "ผู้ใช้ \"admin\" ใส่ให้เองแล้ว)") from None
                 raise LightError(f"ติดต่อกล้องไม่ได้ ({msg[:80]})") from None
+            _BAD_PASSWORD.pop(self.ip, None)
+            _LOCKED_UNTIL.pop(self.ip, None)
         return self.t
 
     def status(self) -> dict:

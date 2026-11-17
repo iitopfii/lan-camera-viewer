@@ -7,6 +7,8 @@ import json
 import math
 import os
 import sys
+import queue
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -22,7 +24,7 @@ from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, Signal, Slot  # 
 from PySide6.QtGui import QImage, QPixmap, QKeySequence, QShortcut  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QButtonGroup, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMainWindow,
-    QMessageBox, QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
 import theme  # noqa: E402
@@ -95,6 +97,15 @@ class StreamWorker(QThread):
         self.frame_id = 0  # เพิ่มทุกครั้งที่มีภาพใหม่ หน้าจอจะมาดึงภาพล่าสุดเอง
         self.target = (640, 360)  # ขนาดที่จอต้องการ (MainWindow อัปเดตให้)
         self.active = True  # มีช่องที่แสดงสตรีมนี้อยู่หรือไม่
+        self.web_until = 0.0  # มีคนดูผ่านเว็บถึงเวลานี้ (time.monotonic) → ถอดรหัสทุกภาพแม้หน้าต่างซ่อน
+        self.last_status = ""
+        self.status.connect(lambda t: setattr(self, "last_status", t))
+        # ผู้ดูวิดีโอผ่านเว็บ: ได้สำเนาแพ็กเก็ตวิดีโอ (ไม่ถอดรหัส/เข้ารหัสใหม่ เครื่องไม่หนัก)
+        self.vstream = None  # สตรีมวิดีโอของการเชื่อมต่อปัจจุบัน (ใช้เป็นแม่แบบตอนทำไฟล์ MP4 ให้เว็บ)
+        self.codec = ""
+        self._subs: list[queue.Queue] = []
+        self._subs_lock = threading.Lock()
+        self._wgop: list[tuple] = []  # แพ็กเก็ตตั้งแต่ภาพหลักล่าสุด → คนดูใหม่เห็นภาพทันที
         # การอัด: หน้าจอแค่ตั้งค่า _rec_path (เริ่ม) / None (หยุด) เธรดนี้เป็นคนเปิด-เขียน-ปิดไฟล์เองทั้งหมด
         self._rec_path: Path | None = None
         self._out = None  # (output container, output stream, เวลาเริ่ม, path ที่ขอ, ค่าล่าสุดของ pts)
@@ -127,6 +138,53 @@ class StreamWorker(QThread):
 
     def stop_record(self):
         self._rec_path = None
+
+    # ---------- ผู้ดูวิดีโอผ่านเว็บ ----------
+    def subscribe(self, maxsize: int = 400):
+        """คืน (คิวของ (bytes, เป็นภาพหลัก, เวลามาถึง) – None = สตรีมจบ, สตรีมแม่แบบ)"""
+        q: queue.Queue = queue.Queue(maxsize)
+        with self._subs_lock:
+            vst = self.vstream
+            if vst is None:
+                return None, None
+            if self._wgop and self._wgop[0][1]:
+                for item in self._wgop[-maxsize // 2:]:
+                    q.put_nowait(item)
+            self._subs.append(q)
+        return q, vst
+
+    def unsubscribe(self, q):
+        with self._subs_lock:
+            if q in self._subs:
+                self._subs.remove(q)
+
+    def _share_packet(self, packet, arrived):
+        if not (self._subs or self.web_until > arrived):
+            if self._wgop:
+                self._wgop = []
+            return
+        item = (bytes(packet), bool(packet.is_keyframe), arrived)
+        with self._subs_lock:
+            if item[1]:
+                self._wgop = []
+            if len(self._wgop) < 600:
+                self._wgop.append(item)
+            for q in self._subs:
+                try:
+                    q.put_nowait(item)
+                except queue.Full:  # ผู้ดูรับไม่ทัน (เน็ตช้า) → ตัดให้เขาต่อใหม่
+                    q.overflow = True
+
+    def _end_subs(self):
+        with self._subs_lock:
+            self.vstream = None
+            self._wgop = []
+            for q in self._subs:
+                try:
+                    q.put_nowait(None)
+                except queue.Full:
+                    q.overflow = True
+            self._subs = []
 
     def _display_size(self, w, h):
         tw, th = self.target
@@ -204,6 +262,9 @@ class StreamWorker(QThread):
                 cc = stream.codec_context
                 cc.thread_type = "AUTO"
                 cc.thread_count = 2  # หลายกล้องพร้อมกัน ใช้ 2 เธรดต่อกล้องพอ ไม่แย่งกันเอง
+                self.codec = cc.name
+                with self._subs_lock:
+                    self.vstream = stream
                 self.status.emit("")
                 skipping = False
                 for packet in container.demux(stream):
@@ -235,6 +296,7 @@ class StreamWorker(QThread):
                             self._gop = []
                         if len(self._gop) < 600:
                             self._gop.append((packet, arrived))
+                        self._share_packet(packet, arrived)  # ก่อนอัด (mux จะยึดข้อมูลแพ็กเก็ตไป)
                         if self._rec_path is not None or self._out is not None:
                             # หลังถอดรหัสแล้วเท่านั้น (mux จะยึดข้อมูลแพ็กเก็ตไป)
                             self._record_packet(packet, arrived, stream)
@@ -242,6 +304,7 @@ class StreamWorker(QThread):
                 pass
             finally:
                 self._close_out()  # ปิดไฟล์อัดให้สมบูรณ์ (ถ้ายังอัดอยู่ จะเริ่มไฟล์ใหม่หลังต่อกลับ)
+                self._end_subs()
                 self._gop = []
                 container.close()
             if self._running:
@@ -275,8 +338,12 @@ class CameraTile(QFrame):
         self.dot.setObjectName("dot")
         self.title = QLabel(name)
         self.title.setObjectName("tileTitle")
+        self.title.setMinimumWidth(40)  # ช่องแคบ: ชื่อถูกตัดได้ ไม่บังคับความกว้าง
         self.info = QLabel("")
         self.info.setProperty("role", "muted")
+        self.info.setMinimumWidth(0)
+        self.info.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.setMinimumSize(110, 80)  # กำหนดเอง ไม่ให้หัวช่องบังคับความกว้าง → ย่อหน้าต่างได้เล็ก
         self.rec_label = QLabel("REC")
         self.rec_label.setObjectName("rec")
         self.rec_label.hide()
@@ -284,7 +351,7 @@ class CameraTile(QFrame):
         self.video.setObjectName("video")
         self.video.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video.setWordWrap(True)
-        self.video.setMinimumSize(280, 158)
+        self.video.setMinimumSize(80, 45)
         self.video.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
 
         head = QHBoxLayout()
@@ -713,6 +780,18 @@ class MainWindow(QMainWindow):
         btn_settings.clicked.connect(self.open_settings)
         btn_about = theme.btn("", "info", kind="ghost", tip="เกี่ยวกับโปรแกรม / ผู้จัดทำ")
         btn_about.clicked.connect(self.open_about)
+        self.btn_about = btn_about
+        self.update_info = None  # ข้อมูลเวอร์ชันใหม่ (ถ้ามี) – แสดงจุดแดงที่ปุ่ม (i)
+        self.btn_web = theme.btn("ดูผ่านเว็บ", "globe", kind="ghost", tip="ดูกล้องผ่านเบราว์เซอร์ / มือถือ")
+        self.btn_web.clicked.connect(self.open_web)
+        self.btn_side = theme.btn("", "panel", kind="ghost", tip="แสดง / ซ่อนแผงหมุนกล้องและไฟ")
+        self.btn_side.setCheckable(True)
+        self.btn_side.setChecked(True)
+        self.btn_side.toggled.connect(self._set_side_visible)
+        # ปุ่มที่มีข้อความ – หน้าต่างแคบจะเหลือแต่ไอคอน
+        self._text_btns = [(btn_snap, btn_snap.text()), (self.btn_rec, self.btn_rec.text()),
+                           (self.btn_web, self.btn_web.text()), (btn_settings, btn_settings.text())]
+        self.app_title = app_title
         self.info = theme.label("คลิกภาพ = เลือกกล้องที่จะหมุน · ดับเบิลคลิก = ขยาย" if self.tiles else "", "muted")
         self.info.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.info.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # จอแคบให้หดได้ ไม่ทับปุ่ม
@@ -739,6 +818,8 @@ class MainWindow(QMainWindow):
         bar.addStretch()
         bar.addWidget(self.info)
         bar.addSpacing(10)
+        bar.addWidget(self.btn_web)
+        bar.addWidget(self.btn_side)
         bar.addWidget(btn_about)
         bar.addWidget(btn_settings)
         for w in bar_frame.findChildren(QPushButton):
@@ -802,8 +883,22 @@ class MainWindow(QMainWindow):
                 t.clicked.connect(lambda tile: self.light.select_by_ip(tile.ip))
             if not self.ptz:
                 side.addStretch()
+        self.side_box = None
         if self.ptz or self.light:
-            body.addLayout(side)
+            holder = QWidget()
+            holder.setLayout(side)
+            side.setContentsMargins(0, 0, 0, 0)
+            sc = QScrollArea()  # จอเตี้ย: แผงด้านข้างเลื่อนขึ้นลงได้ ไม่บังคับให้หน้าต่างสูง
+            sc.setWidget(holder)
+            sc.setWidgetResizable(True)
+            sc.setFrameShape(QFrame.Shape.NoFrame)
+            sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            sc.setFixedWidth(244)
+            sc.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+            self.side_box = sc
+            body.addWidget(sc)
+        else:
+            self.btn_side.hide()
         v.addLayout(body, 1)
         self.setCentralWidget(root)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -827,6 +922,28 @@ class MainWindow(QMainWindow):
             QApplication.instance()._update_checked = True
             QTimer.singleShot(5000, self._check_update)
 
+    def _set_side_visible(self, on: bool):
+        if self.side_box is not None:
+            self.side_box.setVisible(on)
+        QTimer.singleShot(0, self._relayout_if_needed)
+
+    def resizeEvent(self, e):
+        """หน้าต่างแคบ: ปุ่มเหลือแต่ไอคอน ซ่อนชื่อโปรแกรม และซ่อนแผงด้านข้าง (กดปุ่มแผงเพื่อเปิดได้)"""
+        super().resizeEvent(e)
+        if not hasattr(self, "_text_btns"):
+            return
+        w = self.width()
+        compact = w < 1200
+        for b, text in self._text_btns:
+            b.setText("" if compact else text)
+        self.app_title.setVisible(w >= 1000)
+        self.count_pill.setVisible(w >= 1100)
+        narrow = w < 900
+        if narrow != getattr(self, "_narrow", None):
+            self._narrow = narrow
+            self.btn_side.setChecked(not narrow)
+        QTimer.singleShot(0, self._relayout_if_needed)
+
     def _check_update(self):
         from updater import UpdateChecker  # noqa: PLC0415
         self._checker = UpdateChecker(self)
@@ -835,8 +952,16 @@ class MainWindow(QMainWindow):
 
     def _on_update(self, info):
         from updater import offer_update  # noqa: PLC0415
+        self.set_update_badge(info)
         if offer_update(self, info, self.cfg, save=save_config):
+            QApplication.instance().quitting = True  # ปิดจริง (ไม่ซ่อนไปถาด) ให้ตัวติดตั้งทำงานได้
             self.close()
+
+    def set_update_badge(self, info):
+        self.update_info = info
+        self.btn_about.setIcon(theme.icon("info", theme.TEXT, badge=theme.DANGER if info else None))
+        self.btn_about.setToolTip(f"มีเวอร์ชันใหม่ {info['version']} – คลิกเพื่ออัปเดต" if info
+                                  else "เกี่ยวกับโปรแกรม / ผู้จัดทำ")
 
     def open_settings(self, tab=0):
         """เปิดหน้าตั้งค่า – ปิดสตรีมก่อน (กล้องบางรุ่นรับคนดูพร้อมกันได้น้อย จะได้ทดสอบได้)"""
@@ -849,6 +974,8 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self.cfg, self, tab=tab if isinstance(tab, int) and not isinstance(tab, bool) else 0)
         if dlg.exec():
             save_config(dlg.cfg)
+            setup_web(QApplication.instance(), dlg.cfg)
+            self._replacing = True
             new = MainWindow(dlg.cfg)
             new.setGeometry(self.geometry())
             QApplication.instance().main_window = new  # เก็บอ้างอิงไว้ ไม่ให้หน้าต่างใหม่ถูกลบ
@@ -857,9 +984,28 @@ class MainWindow(QMainWindow):
         else:
             self.connect_all()
 
+    def open_web(self):
+        from web_dialog import WebDialog  # noqa: PLC0415
+        app = QApplication.instance()
+        WebDialog(self.cfg, getattr(app, "web", None), self._apply_web, self).exec()
+
+    def _apply_web(self, cfg):
+        """บันทึกค่าเว็บ แล้วเปิด/ปิดเซิร์ฟเวอร์ทันที (ไม่ต้องต่อกล้องใหม่)"""
+        save_config(cfg)
+        app = QApplication.instance()
+        setup_web(app, cfg)
+        self.update_web_button()
+        return getattr(app, "web", None)
+
+    def update_web_button(self):
+        on = getattr(QApplication.instance(), "web", None) is not None
+        self.btn_web.setIcon(theme.icon("globe", theme.SUCCESS if on else theme.TEXT))
+        self.btn_web.setToolTip("ดูผ่านเว็บ: เปิดอยู่ – คลิกเพื่อดูลิงก์ / ตั้งค่า" if on
+                                else "ดูกล้องผ่านเบราว์เซอร์ / มือถือ (ปิดอยู่)")
+
     def open_about(self):
         from about_dialog import AboutDialog  # noqa: PLC0415
-        AboutDialog(self).exec()
+        AboutDialog(self, update=self.update_info).exec()
 
     def _poll_tiles(self):
         # บอกแต่ละสตรีมว่าต้องการภาพขนาดเท่าไร และมีช่องแสดงอยู่ไหม (ไม่มี = ถอดรหัสแค่ภาพหลัก)
@@ -874,6 +1020,16 @@ class MainWindow(QMainWindow):
                 need[w] = (max(cur[0], tw), max(cur[1], th))
             else:
                 need.setdefault(w, None)
+        now = time.monotonic()
+        web_hd = frozenset(id(t) for t in self.tiles if getattr(t, "web_hd_until", 0) > now)
+        if web_hd != getattr(self, "_web_hd", frozenset()):
+            self._web_hd = web_hd
+            self.sync_streams()  # มีคนเริ่ม/เลิกดู HD ผ่านเว็บ → สลับสตรีมของช่องนั้น
+        for t in self.tiles:  # มีคนดูผ่านเว็บ: ถอดรหัสทุกภาพ ขนาดพอสำหรับเว็บ
+            w = t.worker
+            if w is not None and w.web_until > now:
+                cur = need.get(w) or (0, 0)
+                need[w] = (max(cur[0], 1280), max(cur[1], 1440 if t.crop else 720))
         for w, size in need.items():
             w.active = size is not None
             if size:
@@ -892,15 +1048,52 @@ class MainWindow(QMainWindow):
         for t in self.tiles:
             t.back_btn.setVisible(t is self.focused)
             t.setToolTip("" if self.focused else "ดับเบิลคลิกเพื่อขยายดูกล้องนี้")
-        cols = max(1, math.ceil(math.sqrt(len(shown))))  # 1→1, 2-4→2, 5-9→3 คอลัมน์
+        cols = self._best_cols(len(shown))
+        self._cols = (cols, len(shown))
         for i, t in enumerate(shown):
             self.grid.addWidget(t, i // cols, i % cols)
             t.show()
 
+    def _grid_area(self):
+        """ขนาดพื้นที่สำหรับช่องภาพ (หน้าต่างลบแถบบนและแผงด้านข้าง)"""
+        cw = self.centralWidget()
+        w = (cw.width() if cw else self.width()) - 24
+        h = (cw.height() if cw else self.height()) - 24 - 62
+        if getattr(self, "side_box", None) is not None and self.side_box.isVisible():
+            w -= self.side_box.width() + 10
+        return max(w, 100), max(h, 100)
+
+    def _best_cols(self, n: int) -> int:
+        """เลือกจำนวนคอลัมน์ที่ทำให้ภาพ 16:9 ใหญ่ที่สุดตามรูปทรงหน้าต่าง (หน้าต่างสูง → ซ้อนบน-ล่าง)"""
+        if n <= 1:
+            return 1
+        W, H = self._grid_area()
+        sp, head = 10, 32
+        best, best_area = 1, -1
+        for cols in range(1, n + 1):
+            rows = math.ceil(n / cols)
+            cw = (W - sp * (cols - 1)) / cols
+            ch = (H - sp * (rows - 1)) / rows - head
+            vw = min(cw, ch * 16 / 9)
+            if vw > best_area + 1:
+                best, best_area = cols, vw
+        return best
+
+    def _relayout_if_needed(self):
+        shown = 1 if self.focused else len(self.tiles)
+        if getattr(self, "_cols", None) != (self._best_cols(shown), shown):
+            self.layout_grid()
+
     def quality(self) -> str:
         return next((k for k, b in self.q_btns.items() if b.isChecked()), "auto")
 
+    def url_for(self, tile, quality: str) -> str:
+        cam = next(c for t, c in self.tile_cams if t is tile)
+        return build_url(self.cfg, cam, quality)
+
     def _tile_quality(self, tile) -> str:
+        if getattr(tile, "web_hd_until", 0) > time.monotonic():
+            return "hd"  # มีคนดูช่องนี้แบบ HD ผ่านเว็บ
         q = self.quality()
         if q != "auto":
             return q
@@ -1027,6 +1220,17 @@ class MainWindow(QMainWindow):
         super().keyReleaseEvent(e)
 
     def closeEvent(self, e):
+        app = QApplication.instance()
+        if not getattr(self, "_replacing", False) and not getattr(app, "quitting", False) \
+                and getattr(app, "web", None) is not None:
+            e.ignore()  # เปิดเว็บไว้อยู่ → ซ่อนไปที่ถาด ให้ดูผ่านเว็บได้ต่อ
+            self.hide()
+            tray = getattr(app, "tray", None)
+            if tray and not getattr(app, "_tray_told", False):
+                app._tray_told = True
+                tray.showMessage(APP_NAME, "โปรแกรมยังทำงานอยู่ที่ถาด เพื่อให้ดูผ่านเว็บได้ – "
+                                 "คลิกขวาที่ไอคอนเพื่อเปิดหรือออกจากโปรแกรม")
+            return
         if self.ptz:
             self.ptz.shutdown()
         if self.light:
@@ -1035,6 +1239,8 @@ class MainWindow(QMainWindow):
         self.stop_workers(wait=False)
         wait_threads(self._retired, timeout=3)  # ให้เธรดปิดไฟล์วิดีโอที่อัดอยู่ให้สมบูรณ์ก่อน
         super().closeEvent(e)
+        if not getattr(self, "_replacing", False):
+            app.quit()
 
 
 def main():
@@ -1060,10 +1266,119 @@ def main():
             return 0
         cfg = dlg.cfg
         save_config(cfg)
+    app.setQuitOnLastWindowClosed(False)  # ปิดเองใน closeEvent (เปิดเว็บไว้ = ซ่อนไปถาด)
     app.main_window = MainWindow(cfg)
-    app.main_window.show()
+    setup_web(app, cfg)
+    if "--background" in sys.argv and getattr(app, "web", None) is not None:
+        pass  # เปิดพร้อม Windows: ทำงานเงียบๆ ที่ถาด
+    else:
+        app.main_window.show()
     code = app.exec()
     hard_exit(code)
+
+
+def show_main(app):
+    w = app.main_window
+    w.showNormal()
+    w.raise_()
+    w.activateWindow()
+
+
+def quit_app(app):
+    app.quitting = True
+    app.main_window.close()
+
+
+def setup_web(app, cfg: dict):
+    """เปิด/ปิดเซิร์ฟเวอร์เว็บตามค่าตั้ง (เรียกตอนเริ่มโปรแกรมและหลังบันทึกค่าตั้ง)"""
+    web_cfg = cfg.get("web") or {}
+    old = getattr(app, "web", None)
+    want = bool(web_cfg.get("enabled") and web_cfg.get("username") and (web_cfg.get("password") or {}).get("hash"))
+    if old is not None and (not want or old.cfg != web_cfg):
+        old.stop()
+        app.web = None
+    if want and getattr(app, "web", None) is None:
+        from web_server import WebServer  # noqa: PLC0415
+        srv = WebServer(dict(web_cfg), lambda: getattr(app, "main_window", None))
+        if srv.start():
+            app.web = srv
+        else:
+            app.web = None
+            QMessageBox.warning(None, APP_NAME, f"เปิดหน้าเว็บไม่ได้ (พอร์ต {srv.port}): {srv.error}\n"
+                                "ลองเปลี่ยนพอร์ตในหน้าต่างดูผ่านเว็บ")
+    _setup_relay(app, cfg)
+    _setup_tray(app)
+    win = getattr(app, "main_window", None)
+    if win is not None and hasattr(win, "update_web_button"):
+        win.update_web_button()
+
+
+def _setup_relay(app, cfg: dict):
+    """เข้าจากนอกบ้านผ่าน cam.hypebizsoft.com – ทำงานเมื่อเปิดหน้าเว็บอยู่ + เปิดสวิตช์ + จับคู่แล้ว"""
+    r = cfg.get("relay") or {}
+    web = getattr(app, "web", None)
+    want = bool(web is not None and r.get("enabled") and r.get("token"))
+    key = (r.get("server"), r.get("token"), web.port if web else None) if want else None
+    cur = getattr(app, "relay", None)
+    if cur is not None and (not want or getattr(app, "_relay_key", None) != key):
+        cur.stop()
+        app.relay = None
+        app.relay_status = ("ปิดอยู่", False)
+    if want and r.get("host") and web.relay_host != r["host"].lower():
+        # เว็บเซิร์ฟเวอร์อาจเพิ่งถูกสร้างใหม่ (กดบันทึกค่าเว็บ) → ใส่ใบรับรองของชื่อนอกบ้านให้ทุกครั้ง
+        from relay_client import cert_valid_for  # noqa: PLC0415
+        if cert_valid_for(r["host"]):
+            web.set_relay_cert(r["host"])
+    if want and getattr(app, "relay", None) is None:
+        from relay_client import DEFAULT_SERVER, RelayClient  # noqa: PLC0415
+
+        def status(text, ok):
+            app.relay_status = (text, ok)
+
+        def got_cert(host):
+            w = getattr(app, "web", None)
+            if w is not None:
+                w.set_relay_cert(host)
+
+        app.relay = RelayClient(r.get("server") or DEFAULT_SERVER, r["token"], web.port, status, got_cert,
+                                cafile=r.get("test_cafile"))
+        app._relay_key = key
+        app.relay.start()
+
+
+def _setup_tray(app):
+    from PySide6.QtGui import QIcon  # noqa: PLC0415
+    from PySide6.QtWidgets import QMenu, QSystemTrayIcon  # noqa: PLC0415
+    web = getattr(app, "web", None)
+    tray = getattr(app, "tray", None)
+    if web is None:
+        if tray:
+            tray.hide()
+        return
+    if tray is None:
+        tray = QSystemTrayIcon(app.windowIcon() if not app.windowIcon().isNull() else QIcon(), app)
+        tray.activated.connect(lambda r: show_main(app) if r in (
+            QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick) else None)
+        app.tray = tray
+    menu = QMenu()
+    menu.addAction("เปิดหน้าต่าง", lambda: show_main(app))
+    urls = web.urls()
+    if urls:
+        from PySide6.QtCore import QUrl  # noqa: PLC0415
+        from PySide6.QtGui import QDesktopServices  # noqa: PLC0415
+        menu.addAction(f"เปิดหน้าเว็บ ({urls[0]})", lambda: QDesktopServices.openUrl(QUrl(urls[0])))
+    relay_host = ((app.main_window.cfg.get("relay") or {}).get("host") if getattr(app, "main_window", None) else "")
+    if getattr(app, "relay", None) is not None and relay_host:
+        from PySide6.QtCore import QUrl  # noqa: PLC0415
+        from PySide6.QtGui import QDesktopServices  # noqa: PLC0415
+        menu.addAction(f"เปิดลิงก์นอกบ้าน (https://{relay_host})",
+                       lambda: QDesktopServices.openUrl(QUrl(f"https://{relay_host}")))
+    menu.addSeparator()
+    menu.addAction("ออกจากโปรแกรม", lambda: quit_app(app))
+    app._tray_menu = menu  # เก็บอ้างอิงไว้ ไม่ให้เมนูถูกลบ
+    tray.setContextMenu(menu)
+    tray.setToolTip(f"{APP_NAME} – เปิดดูผ่านเว็บได้ที่ " + (", ".join(urls) or f"พอร์ต {web.port}"))
+    tray.show()
 
 
 def hard_exit(code: int = 0):

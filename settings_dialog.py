@@ -144,7 +144,11 @@ class SettingsDialog(QDialog):
 
         tabs = QTabWidget()
         tabs.addTab(self._build_cameras_tab(), "กล้อง")
-        tabs.addTab(self._build_general_tab(), "ทั่วไป")
+        gen = QScrollArea()  # แท็บทั่วไปยาวขึ้น – เลื่อนได้
+        gen.setWidget(self._build_general_tab())
+        gen.setWidgetResizable(True)
+        gen.setFrameShape(QFrame.Shape.NoFrame)
+        tabs.addTab(gen, "ทั่วไป")
         tabs.setCurrentIndex(tab)
 
         cancel = theme.btn("ยกเลิก", kind="ghost")
@@ -730,6 +734,7 @@ class SettingsDialog(QDialog):
         note2.setWordWrap(True)
         v2.addWidget(note2)
         outer.addWidget(c2)
+
         outer.addStretch()
         return w
 

@@ -70,13 +70,15 @@ _ICONS = {
              '<rect x="2" y="6" width="14" height="12" rx="2"/>',
     "folder": '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4'
               'a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+    "globe": '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+    "panel": '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/>',
     "radar": '<path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/><path d="M4 6h.01"/><path d="M2.29 9.62A10 10 0 1 0 21.31 8.35"/>'
              '<path d="M16.24 7.76A6 6 0 1 0 8.23 16.67"/><path d="M12 18h.01"/><path d="M17.99 11.66A6 6 0 0 1 15.77 16.67"/>'
              '<circle cx="12" cy="12" r="2"/><path d="m13.41 10.59 5.66-5.66"/>',
 }
 
 
-def icon(name: str, color: str = TEXT, size: int = 48) -> QIcon:
+def icon(name: str, color: str = TEXT, size: int = 48, badge: str | None = None) -> QIcon:
     body = _ICONS[name].replace("{c}", color)
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" '
            f'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{body}</svg>')
@@ -84,6 +86,12 @@ def icon(name: str, color: str = TEXT, size: int = 48) -> QIcon:
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     QSvgRenderer(QByteArray(svg.encode())).render(p)
+    if badge:  # จุดแจ้งเตือนมุมขวาบน
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(badge))
+        r = size * 0.4
+        p.drawEllipse(int(size - r), 0, int(r), int(r))
     p.end()
     return QIcon(pm)
 

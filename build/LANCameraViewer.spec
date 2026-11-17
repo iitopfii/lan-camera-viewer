@@ -18,7 +18,9 @@ a = Analysis(
     pathex=[str(ROOT)],
     datas=[(str(ROOT / "assets"), "assets")],
     binaries=QT_PLUGINS,
-    hiddenimports=collect_submodules("pytapo") + ["settings_dialog", "about_dialog", "light_control", "updater"],
+    hiddenimports=collect_submodules("pytapo") + ["settings_dialog", "about_dialog", "light_control", "updater", "web_server", "web_dialog", "relay_client"]
+                  + collect_submodules("websockets")
+                  + collect_submodules("cryptography.x509") + collect_submodules("cryptography.hazmat"),
     excludes=["tkinter", "matplotlib", "cv2", "numpy", "PIL", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
               "PySide6.QtQml", "PySide6.QtQuick", "PySide6.Qt3DCore", "PySide6.QtMultimedia",
               "PySide6.QtPdf", "PySide6.QtCharts", "PySide6.QtDataVisualization"],

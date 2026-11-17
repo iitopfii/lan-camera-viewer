@@ -25,8 +25,9 @@ def _row(icon_name, text, button=None):
 
 
 class AboutDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, update=None):
         super().__init__(parent)
+        self._update = update
         self.setWindowTitle(f"เกี่ยวกับ {APP_NAME}")
         self.setWindowIcon(theme.icon("info", theme.ACCENT))
         self.setFixedWidth(460)
@@ -108,8 +109,12 @@ class AboutDialog(QDialog):
         credits.setWordWrap(True)
         credits.setStyleSheet("font-size: 8.5pt;")
 
-        self.upd_btn = theme.btn("ตรวจหาอัปเดต", "refresh", kind="ghost")
-        self.upd_btn.clicked.connect(self._check_update)
+        if update:
+            self.upd_btn = theme.btn(f"อัปเดตเป็น {update['version']}", "refresh", kind="primary", color="#ffffff")
+            self.upd_btn.clicked.connect(lambda: self._on_found(update))
+        else:
+            self.upd_btn = theme.btn("ตรวจหาอัปเดต", "refresh", kind="ghost")
+            self.upd_btn.clicked.connect(self._check_update)
         close = theme.btn("ปิด", kind="primary")
         close.clicked.connect(self.accept)
         foot = QHBoxLayout()
@@ -140,11 +145,17 @@ class AboutDialog(QDialog):
 
     def _on_found(self, info):
         from updater import offer_update  # noqa: PLC0415
-        self._upd_done(f"มีเวอร์ชัน {info['version']}")
+        win = self.parent()
+        if win is not None and hasattr(win, "set_update_badge"):
+            win.set_update_badge(info)
+        if not self._update:
+            self._upd_done(f"มีเวอร์ชัน {info['version']}")
         if offer_update(self, info, manual=True):
             self.accept()
             win = self.parent()
             if win is not None:
+                from PySide6.QtWidgets import QApplication  # noqa: PLC0415
+                QApplication.instance().quitting = True
                 win.close()
 
     def _copy_phone(self):
