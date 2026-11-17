@@ -1,0 +1,17 @@
+# ข้อมูลส่วนตัว – มีรหัสผ่านกล้อง ห้ามขึ้น git
+config.json
+config.*.json
+!config.example.json
+
+# ไฟล์ที่ผู้ใช้ถ่าย/อัด
+snapshots/
+recordings/
+
+# ไฟล์ build
+dist/
+build/__pycache__/
+__pycache__/
+*.pyc
+*.spec.bak
+.venv/
+venv/

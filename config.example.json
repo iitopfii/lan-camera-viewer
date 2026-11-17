@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "cameras": [
+    {
+      "name": "หน้าบ้าน",
+      "model": "tapo_dual",
+      "ip": "192.168.1.100",
+      "username": "Camera Account ที่ตั้งในแอป Tapo",
+      "password": "รหัส Camera Account",
+      "enabled": true,
+      "ptz": true
+    },
+    {
+      "name": "หน้าร้าน",
+      "model": "yoosee_dual",
+      "ip": "192.168.1.120",
+      "username": "admin",
+      "password": "รหัส NVR ที่ตั้งในแอป Yoosee",
+      "enabled": true,
+      "ptz": false
+    },
+    {
+      "name": "โรงรถ",
+      "model": "custom",
+      "ip": "192.168.1.130",
+      "username": "admin",
+      "password": "รหัสกล้อง",
+      "port": 554,
+      "hd_path": "path ภาพชัด (กด ตรวจหาอัตโนมัติ ในหน้าตั้งค่าเพื่อให้ใส่ให้)",
+      "sd_path": "path ภาพเล็ก",
+      "transport": "auto",
+      "layout": "single",
+      "onvif_port": 80,
+      "enabled": false,
+      "ptz": false
+    }
+  ],
+  "_models": "tapo_single, tapo_dual, yoosee_single, yoosee_dual, hikvision, ezviz, dahua, reolink, vstarcam, custom",
+  "quality": "sd",
+  "snapshot_dir": "snapshots",
+  "record_dir": "recordings",
+  "ptz": {"enabled": true}
+}
