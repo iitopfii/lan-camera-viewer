@@ -44,3 +44,6 @@ venv\Scripts\python tapo_viewer.py
 
 ## ผู้จัดทำ
 Topf'ii Chanwit (Ei-Zale) · Hypebizsoft CO., LTD. · [Facebook](https://www.facebook.com/Ev.Unsmile)
+
+## License
+[MIT](LICENSE) – ใช้ แก้ไข และแจกจ่ายต่อได้ แต่ต้องคงข้อความลิขสิทธิ์ไว้
