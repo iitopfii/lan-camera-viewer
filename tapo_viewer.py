@@ -1249,6 +1249,8 @@ def main():
         os.environ.setdefault("QT_PLUGIN_PATH", str(RES_DIR / "PySide6" / "plugins"))
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+    if _already_running(app):
+        return 0
     theme.apply(app)
     ico = ASSETS / "app.ico"
     if ico.exists():
@@ -1277,9 +1279,53 @@ def main():
     hard_exit(code)
 
 
+def _instance_name() -> str:
+    """ชื่อช่องสื่อสารของโปรแกรมที่เปิดอยู่ – แยกตามผู้ใช้ Windows และแยกตัวติดตั้งกับตัวที่รันจากซอร์ส"""
+    from app_info import FROZEN  # noqa: PLC0415
+    user = re.sub(r"[^A-Za-z0-9]", "_", os.environ.get("USERNAME", "user"))
+    return f"LANCameraViewer-{'app' if FROZEN else 'dev'}-{user}"
+
+
+def _already_running(app) -> bool:
+    """กันเปิดซ้ำ: ถ้ามีโปรแกรมเปิดอยู่แล้ว ให้ตัวนั้นเด้งหน้าต่างขึ้นมา แล้วตัวนี้ปิดไป"""
+    from PySide6.QtNetwork import QLocalServer, QLocalSocket  # noqa: PLC0415
+    name = _instance_name()
+    sock = QLocalSocket()
+    sock.connectToServer(name)
+    if sock.waitForConnected(700):
+        # เปิดพร้อม Windows (--background) ซ้ำ = ไม่ต้องเด้งหน้าต่างรบกวน
+        sock.write(b"quiet\n" if "--background" in sys.argv else b"show\n")
+        sock.flush()
+        sock.waitForBytesWritten(700)
+        sock.disconnectFromServer()
+        return True
+    QLocalServer.removeServer(name)  # ล้างของค้างจากครั้งที่ปิดไม่สมบูรณ์
+    server = QLocalServer(app)
+    server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
+
+    def on_connection():
+        c = server.nextPendingConnection()
+        if c is None:
+            return
+
+        def read():
+            if b"show" in bytes(c.readAll()) and getattr(app, "main_window", None) is not None:
+                show_main(app)
+        c.readyRead.connect(read)
+        c.disconnected.connect(c.deleteLater)
+        if c.bytesAvailable():
+            read()
+
+    server.newConnection.connect(on_connection)
+    server.listen(name)
+    app.instance_server = server
+    return False
+
+
 def show_main(app):
     w = app.main_window
-    w.showNormal()
+    if w.isMinimized() or not w.isVisible():
+        w.showNormal()
     w.raise_()
     w.activateWindow()
 

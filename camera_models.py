@@ -98,6 +98,21 @@ MODELS: dict[str, dict] = {
         "lenses": [{"label": "", "hd": "tcp/av0_0", "sd": "tcp/av0_1"}],
         "help": "Username = admin · Password = รหัสที่ตั้งในแอป Eye4 (ค่าเริ่มต้น 888888)",
     },
+    "tvt": {
+        "label": "TVT / Hiview – กล้อง IP",
+        "user": "admin", "port": 554, "transport": "tcp", "ptz": False, "onvif_port": 80,
+        "lenses": [{"label": "", "hd": "profile1", "sd": "profile2"}],
+        "help": "ใช้ user/รหัสเดียวกับหน้าเว็บกล้องหรือแอป SuperLive Plus / Hiview (ปกติ admin) · "
+                "ถ้าต่อผ่านเครื่องบันทึก (NVR/DVR) ให้เลือก \"รุ่นอื่นๆ\" แล้วใส่ path เป็น "
+                "chID=1&streamType=main (ภาพชัด) และ chID=1&streamType=sub (ภาพเบา) โดยเปลี่ยนเลข 1 เป็นช่องที่ต้องการ",
+    },
+    "v380": {
+        "label": "V380 / V380 Pro (เฉพาะรุ่นที่เปิด RTSP ได้)",
+        "user": "admin", "port": 554, "transport": "tcp", "ptz": False, "onvif_port": 8899,
+        "lenses": [{"label": "", "hd": "live/ch00_0", "sd": "live/ch00_1"}],
+        "help": "ต้องเปิด RTSP/ONVIF ในแอป V380 ก่อน (ตั้งค่ากล้อง → ตั้งค่าขั้นสูง) แล้วใช้ Username = admin "
+                "กับรหัสที่ตั้งตอนเปิด · รุ่นที่ไม่มีเมนูนี้ดูได้ผ่านแอปเท่านั้น ใช้กับโปรแกรมนี้ไม่ได้",
+    },
     "custom": {
         "label": "รุ่นอื่นๆ / กำหนดเอง (กด \"ตรวจหาอัตโนมัติ\" ได้)",
         "user": "admin", "port": 554, "transport": "auto", "ptz": False, "onvif_port": 80,
