@@ -190,7 +190,9 @@ class RelayClient:
             except OSError:
                 await ws.send(_frame(CLOSE, sid))
                 return
-            relay_peer_ips[writer.get_extra_info("sockname")[1]] = ip
+            if len(relay_peer_ips) > 2000:  # รายการเก่าที่ค้างอยู่ (พอร์ตถูกใช้ซ้ำได้) – ไม่ให้โตไม่สิ้นสุด
+                relay_peer_ips.clear()
+            relay_peer_ips[writer.get_extra_info("sockname")[1]] = str(ip)[:64]
             resume = asyncio.Event()
             resume.set()
             task = asyncio.create_task(pump(sid, reader, resume))

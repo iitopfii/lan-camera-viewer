@@ -58,8 +58,13 @@ def fetch_latest(timeout: float = 8) -> dict | None:
 
 def download(info: dict, progress=None, cancelled=lambda: False) -> Path:
     """ดาวน์โหลดตัวติดตั้งไปไว้ในโฟลเดอร์ temp แล้วตรวจขนาด/SHA-256"""
-    dest = Path(tempfile.gettempdir()) / "LANCameraViewer-update" / info["name"]
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    # ตัวติดตั้งจะถูกรันในเครื่อง → รับเฉพาะไฟล์จาก GitHub ของโปรเจกต์นี้ ที่มีค่า SHA-256 ให้ตรวจ
+    if not str(info.get("url", "")).startswith(f"https://github.com/{GITHUB_REPO}/releases/download/"):
+        raise IOError("ที่อยู่ไฟล์อัปเดตไม่ใช่ของโปรเจกต์นี้")
+    if not re.fullmatch(r"[0-9a-f]{64}", info.get("sha256") or ""):
+        raise IOError("รุ่นนี้ไม่มีค่า SHA-256 ให้ตรวจสอบไฟล์")
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(str(info["name"])).name) or "setup.exe"
+    dest = Path(tempfile.mkdtemp(prefix="LANCameraViewer-update-")) / name
     part = dest.with_suffix(".part")
     h = hashlib.sha256()
     req = urllib.request.Request(info["url"], headers={"User-Agent": UA["User-Agent"]})
@@ -77,7 +82,7 @@ def download(info: dict, progress=None, cancelled=lambda: False) -> Path:
     if info.get("size") and part.stat().st_size != info["size"]:
         part.unlink(missing_ok=True)
         raise IOError("ไฟล์ที่ดาวน์โหลดไม่ครบ")
-    if info.get("sha256") and h.hexdigest() != info["sha256"]:
+    if h.hexdigest() != info["sha256"]:
         part.unlink(missing_ok=True)
         raise IOError("ไฟล์ไม่ตรงกับที่ประกาศไว้ (SHA-256 ไม่ตรง)")
     dest.unlink(missing_ok=True)

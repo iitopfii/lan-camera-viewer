@@ -36,16 +36,24 @@ COOKIE = "lcv_session"
 
 
 # ---------------------------------------------------------------- รหัสผ่าน
-def hash_password(pw: str, salt: str | None = None) -> dict:
+PBKDF2_ITER = 600_000    # รหัสที่ตั้งใหม่ใช้ค่านี้ · รหัสเดิม (ไม่มี "iter") = 200,000 ยังใช้ได้ตามเดิม
+MAX_PW = 200
+
+
+def hash_password(pw: str, salt: str | None = None, iterations: int = PBKDF2_ITER) -> dict:
     salt = salt or secrets.token_hex(16)
-    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salt), 200_000).hex()
-    return {"salt": salt, "hash": h}
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salt), iterations).hex()
+    return {"salt": salt, "hash": h, "iter": iterations}
 
 
 def check_password(pw: str, rec: dict) -> bool:
-    if not rec or not rec.get("salt") or not rec.get("hash"):
+    if not rec or not rec.get("salt") or not rec.get("hash") or len(pw) > MAX_PW:
         return False
-    return hmac.compare_digest(hash_password(pw, rec["salt"])["hash"], rec["hash"])
+    try:
+        iterations = min(max(int(rec.get("iter") or 200_000), 1), 5_000_000)
+        return hmac.compare_digest(hash_password(pw, rec["salt"], iterations)["hash"], str(rec["hash"]))
+    except (ValueError, TypeError):
+        return False
 
 
 # ---------------------------------------------------------------- ใบรับรอง HTTPS
@@ -284,6 +292,10 @@ class _Sink:
 
 
 # ---------------------------------------------------------------- เซิร์ฟเวอร์
+GLOBAL_FAILS = 40        # ผิดรวมทุก IP เกินนี้ใน 10 นาที = กำลังถูกเดารหัสจากหลาย IP
+GLOBAL_LOCK_MINUTES = 10  # → พักการล็อกอินจาก IP ที่ไม่เคยล็อกอินสำเร็จ (เจ้าของที่เคยเข้าได้ยังเข้าได้)
+
+
 class _Guard:
     """จำกัดการเดารหัส: ต่อ IP และรวมทั้งระบบ"""
 
@@ -291,11 +303,17 @@ class _Guard:
         self.fails: dict[str, list[float]] = {}
         self.locked: dict[str, float] = {}
         self.all_fails: list[float] = []
+        self.trusted: dict[str, float] = {}  # IP ที่เคยล็อกอินสำเร็จ → เวลาที่สำเร็จล่าสุด
+        self.global_until = 0.0
         self.lock = threading.Lock()
 
     def blocked(self, ip) -> float:
+        now = time.time()
         with self.lock:
-            return max(0.0, self.locked.get(ip, 0) - time.time())
+            left = max(0.0, self.locked.get(ip, 0) - now)
+            if not left and self.global_until > now and now - self.trusted.get(ip, 0) > 30 * 86400:
+                left = self.global_until - now
+            return left
 
     def fail(self, ip):
         now = time.time()
@@ -306,11 +324,18 @@ class _Guard:
             if len(lst) >= MAX_FAILS:
                 self.locked[ip] = now + LOCK_MINUTES * 60
                 self.fails[ip] = []
-        time.sleep(1.0 + min(len(self.all_fails), 30) * 0.2)  # ยิ่งผิดเยอะ ยิ่งตอบช้า
+            if len(self.all_fails) >= GLOBAL_FAILS:
+                self.global_until = now + GLOBAL_LOCK_MINUTES * 60
+            if len(self.fails) > 5000:  # ไม่ให้ตารางโตไม่สิ้นสุดเมื่อถูกยิงจาก IP จำนวนมาก
+                self.fails = {k: v for k, v in self.fails.items() if v and now - v[-1] < LOCK_MINUTES * 60}
+                self.locked = {k: v for k, v in self.locked.items() if v > now}
+            n = len(self.all_fails)
+        time.sleep(1.0 + min(n, 30) * 0.2)  # ยิ่งผิดเยอะ ยิ่งตอบช้า
 
     def ok(self, ip):
         with self.lock:
             self.fails.pop(ip, None)
+            self.trusted[ip] = time.time()
 
 
 class WebServer:
@@ -386,7 +411,9 @@ class WebServer:
 
     # ---- sessions
     def login(self, ip, user, pw) -> str | None:
-        ok_user = hmac.compare_digest((user or "").strip().lower(), (self.cfg.get("username") or "").strip().lower())
+        # เทียบเป็นไบต์: compare_digest กับข้อความที่มีอักษรไทยจะ error
+        ok_user = hmac.compare_digest((user or "").strip().lower().encode(),
+                                      (self.cfg.get("username") or "").strip().lower().encode())
         ok_pw = check_password(pw or "", self.cfg.get("password") or {})
         if not (ok_user and ok_pw):
             self.guard.fail(ip)
@@ -461,7 +488,12 @@ class _Handler(BaseHTTPRequestHandler):
     def _authed(self):
         return self.srv.valid(self._session())
 
-    def _send(self, code, body: bytes, ctype="text/html; charset=utf-8", extra=None):
+    def _page(self, html: str):
+        """ส่งหน้า HTML: สคริปต์ในหน้าได้รหัสสุ่ม (nonce) ใหม่ทุกครั้ง – สคริปต์อื่นที่ถูกแทรกเข้ามาจะไม่ทำงาน"""
+        nonce = secrets.token_urlsafe(16)
+        self._send(200, html.replace("<script>", f'<script nonce="{nonce}">').encode(), nonce=nonce)
+
+    def _send(self, code, body: bytes, ctype="text/html; charset=utf-8", extra=None, nonce=""):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -472,7 +504,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Strict-Transport-Security", "max-age=31536000")
         self.send_header("Content-Security-Policy",
                          "default-src 'self'; img-src 'self' blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
-                         "script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; form-action 'self'")
+                         f"script-src {repr('nonce-' + nonce) if nonce else repr('none')}; object-src 'none'; "
+                         "base-uri 'none'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -496,7 +529,7 @@ class _Handler(BaseHTTPRequestHandler):
         u = urlsplit(self.path)
         q = parse_qs(u.query)
         if u.path == "/login":
-            return self._send(200, login_page(q.get("e", [""])[0]).encode())
+            return self._page(login_page(q.get("e", [""])[0]))
         if u.path == "/logout":
             self.srv.sessions.pop(self._session() or "", None)
             return self._redirect("/login", {"Set-Cookie": f"{COOKIE}=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Strict"})
@@ -505,7 +538,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(401, {"error": "login"})
             return self._redirect("/login")
         if u.path == "/":
-            return self._send(200, APP_PAGE.encode())
+            return self._page(APP_PAGE)
         if u.path == "/api/cams":
             return self._json(200, {"app": APP_NAME, "version": APP_VERSION, "cams": self.srv.source.cams()})
         if u.path.startswith("/video/"):
@@ -656,7 +689,9 @@ def login_page(err: str) -> str:
     if err == "bad":
         msg = "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง"
     elif err.startswith("locked"):
-        msg = f"ใส่รหัสผิดหลายครั้ง – ลองใหม่ในอีก {err[6:] or LOCK_MINUTES} นาที"
+        # ค่านี้มาจาก URL (ใครก็พิมพ์ได้) → รับเฉพาะตัวเลข ไม่นำข้อความอื่นไปแสดงในหน้า
+        mins = err[6:] if err[6:].isascii() and err[6:].isdigit() and len(err) <= 9 else str(LOCK_MINUTES)
+        msg = f"ใส่รหัสผิดหลายครั้ง – ลองใหม่ในอีก {mins} นาที"
     html = (_LOGIN.replace("__CSS__", _CSS).replace("__APP__", APP_NAME).replace("__CAM__", _ICON["cam"])
             .replace("__EYE__", _ICON["eye"]).replace("__LOCK__", _ICON["lock"]))
     return html.replace("__ERR__", f'<div class="err">{msg}</div>' if msg else "")
