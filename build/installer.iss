@@ -1,8 +1,8 @@
 ; ตัวติดตั้ง LAN Camera Viewer (Inno Setup 6)
-; สร้าง: ISCC.exe build\installer.iss  → dist\LANCameraViewer-Setup-1.1.4.exe
+; สร้าง: ISCC.exe build\installer.iss  → dist\LANCameraViewer-Setup-1.1.5.exe
 
 #define AppName "LAN Camera Viewer"
-#define AppVersion "1.1.4"
+#define AppVersion "1.1.5"
 #define AppPublisher "Hypebizsoft CO., LTD."
 #define AppURL "https://github.com/iitopfii/lan-camera-viewer"
 #define AppExe "LANCameraViewer.exe"

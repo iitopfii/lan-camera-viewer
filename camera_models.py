@@ -67,8 +67,10 @@ MODELS: dict[str, dict] = {
         "label": "Hikvision / HiLook / HiWatch",
         "user": "admin", "port": 554, "transport": "tcp", "ptz": False, "onvif_port": 80,
         "lenses": [{"label": "", "hd": "Streaming/Channels/101", "sd": "Streaming/Channels/102"}],
+        "nvr": {"hd": "Streaming/Channels/{n}01", "sd": "Streaming/Channels/{n}02"},
         "help": "ใช้ user/รหัสเดียวกับที่เข้าหน้าเว็บของกล้อง (ปกติ admin) "
-                "ถ้าจะใช้หมุนกล้อง ต้องเปิด ONVIF และสร้าง user ONVIF ในหน้าเว็บกล้องก่อน",
+                "ถ้าจะใช้หมุนกล้อง ต้องเปิด ONVIF และสร้าง user ONVIF ในหน้าเว็บกล้องก่อน · "
+                "ถ้าเป็นเครื่องบันทึก (NVR/DVR) ใส่ IP ของเครื่องบันทึก แล้วตั้ง \"จำนวนช่อง\" ด้านล่าง",
     },
     "ezviz": {
         "label": "EZVIZ",
@@ -82,15 +84,19 @@ MODELS: dict[str, dict] = {
         "user": "admin", "port": 554, "transport": "tcp", "ptz": False, "onvif_port": 80,
         "lenses": [{"label": "", "hd": "cam/realmonitor?channel=1&subtype=0",
                     "sd": "cam/realmonitor?channel=1&subtype=1"}],
+        "nvr": {"hd": "cam/realmonitor?channel={n}&subtype=0", "sd": "cam/realmonitor?channel={n}&subtype=1"},
         "help": "Dahua: user/รหัสหน้าเว็บกล้อง · Imou: Username = admin, Password = \"Safety code\" "
-                "บนสติกเกอร์ใต้กล้อง (หรือรหัสที่ตั้งใหม่ในแอป Imou)",
+                "บนสติกเกอร์ใต้กล้อง (หรือรหัสที่ตั้งใหม่ในแอป Imou) · "
+                "ถ้าเป็นเครื่องบันทึก (NVR/DVR) ใส่ IP ของเครื่องบันทึก แล้วตั้ง \"จำนวนช่อง\" ด้านล่าง",
     },
     "reolink": {
         "label": "Reolink",
         "user": "admin", "port": 554, "transport": "tcp", "ptz": False, "onvif_port": 8000,
         "lenses": [{"label": "", "hd": "h264Preview_01_main", "sd": "h264Preview_01_sub"}],
+        "nvr": {"hd": "h264Preview_{n:02d}_main", "sd": "h264Preview_{n:02d}_sub"},
         "help": "ใช้ user/รหัสเดียวกับแอป Reolink (ปกติ admin) · ต้องเปิด RTSP/ONVIF ใน "
-                "ตั้งค่า → เครือข่าย → ตั้งค่าพอร์ตขั้นสูง",
+                "ตั้งค่า → เครือข่าย → ตั้งค่าพอร์ตขั้นสูง · "
+                "ถ้าเป็นเครื่องบันทึก (NVR) ใส่ IP ของเครื่องบันทึก แล้วตั้ง \"จำนวนช่อง\" ด้านล่าง",
     },
     "vstarcam": {
         "label": "VStarcam / Eye4",
@@ -103,8 +109,15 @@ MODELS: dict[str, dict] = {
         "user": "admin", "port": 554, "transport": "tcp", "ptz": False, "onvif_port": 80,
         "lenses": [{"label": "", "hd": "profile1", "sd": "profile2"}],
         "help": "ใช้ user/รหัสเดียวกับหน้าเว็บกล้องหรือแอป SuperLive Plus / Hiview (ปกติ admin) · "
-                "ถ้าต่อผ่านเครื่องบันทึก (NVR/DVR) ให้เลือก \"รุ่นอื่นๆ\" แล้วใส่ path เป็น "
-                "chID=1&streamType=main (ภาพชัด) และ chID=1&streamType=sub (ภาพเบา) โดยเปลี่ยนเลข 1 เป็นช่องที่ต้องการ",
+                "ถ้าต่อผ่านเครื่องบันทึก (NVR/DVR) ให้เลือกรุ่น \"TVT / Hiview – เครื่องบันทึก\" แทน",
+    },
+    "tvt_nvr": {
+        "label": "TVT / Hiview – เครื่องบันทึก (NVR/DVR)",
+        "user": "admin", "port": 554, "transport": "tcp", "ptz": False, "onvif_port": 80,
+        "lenses": [{"label": "", "hd": "chID=1&streamType=main", "sd": "chID=1&streamType=sub"}],
+        "nvr": {"hd": "chID={n}&streamType=main", "sd": "chID={n}&streamType=sub"},
+        "help": "ใส่ IP ของเครื่องบันทึก ใช้ user/รหัสเดียวกับหน้าเว็บเครื่องบันทึกหรือแอป SuperLive Plus / Hiview "
+                "(ปกติ admin) แล้วตั้ง \"จำนวนช่อง\" ด้านล่างให้เท่ากับจำนวนกล้องที่ต่ออยู่",
     },
     "v380": {
         "label": "V380 / V380 Pro (เฉพาะรุ่นที่เปิด RTSP ได้)",
@@ -123,11 +136,26 @@ MODELS: dict[str, dict] = {
 }
 
 LAYOUTS = {"single": "ภาพเดียว", "split": "2 เลนส์ ซ้อนบน-ล่างในภาพเดียว"}
+MAX_CHANNELS = 64
+
+
+def channels_of(cam: dict) -> int:
+    """จำนวนช่องของเครื่องบันทึก (NVR/DVR) – 1 = กล้องตัวเดียว · รุ่นที่ไม่ใช่เครื่องบันทึกได้ 1 เสมอ"""
+    if "nvr" not in MODELS.get(cam.get("model", "custom"), {}):
+        return 1
+    try:
+        return min(MAX_CHANNELS, max(1, int(cam.get("channels") or 1)))
+    except (TypeError, ValueError):
+        return 1
 
 
 def lenses_of(cam: dict) -> list[dict]:
     if cam.get("model", "custom") != "custom" and cam.get("model") in MODELS:
-        return MODELS[cam["model"]]["lenses"]
+        m, n = MODELS[cam["model"]], channels_of(cam)
+        if n > 1:  # เครื่องบันทึก: หนึ่งช่องภาพต่อหนึ่งช่องของเครื่อง
+            return [{"label": f"ช่อง {i}", "hd": m["nvr"]["hd"].format(n=i), "sd": m["nvr"]["sd"].format(n=i)}
+                    for i in range(1, n + 1)]
+        return m["lenses"]
     hd, sd = cam.get("hd_path", ""), cam.get("sd_path") or cam.get("hd_path", "")
     if cam.get("layout") == "split":
         return [{"label": "เลนส์บน", "hd": hd, "sd": sd, "crop": "top"},

@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 import theme
 from app_info import DEFAULT_RECORD_DIR, DEFAULT_SNAPSHOT_DIR
 from camera_models import (
-    AUTH_ERR, LAYOUTS, MODELS, auth_hint, lenses_of, probe_stream, rtsp_url, scan_lan, setting, split_rtsp_uri,
+    AUTH_ERR, LAYOUTS, MAX_CHANNELS, MODELS, auth_hint, channels_of, lenses_of, probe_stream, rtsp_url, scan_lan, setting, split_rtsp_uri,
 )
 from onvif_ptz import discover_streams
 
@@ -268,6 +268,14 @@ class SettingsDialog(QDialog):
         fb.addRow(flabel("Username"), self.f_user)
         fb.addRow(flabel("Password"), self.f_pw)
         fb.addRow(flabel(""), self.f_ptz)
+        # จำนวนช่องของเครื่องบันทึก – แสดงเฉพาะรุ่นที่ต่อผ่าน NVR/DVR ได้
+        self.f_ch = PortEdit(1)
+        self.f_ch.setValidator(QIntValidator(1, MAX_CHANNELS, self.f_ch))
+        self.f_ch.setFixedWidth(120)
+        self.f_ch.setToolTip("ถ้า IP นี้เป็นเครื่องบันทึก (NVR/DVR) ใส่จำนวนกล้องที่ต่ออยู่ โปรแกรมจะแสดงครบทุกช่อง\n"
+                             "กล้องตัวเดียว = 1")
+        fb.addRow(flabel("จำนวนช่อง (NVR)"), self.f_ch)
+        self._form_b = fb
         fb.addRow(flabel("ช่องบนจอ"), self.f_lenses)
         v1.addLayout(fb)
         rv.addWidget(c1)
@@ -358,6 +366,7 @@ class SettingsDialog(QDialog):
             wdg.currentIndexChanged.connect(self._form_changed)
         self.f_ptz.toggled.connect(self._form_changed)
         self.f_port.valueChanged.connect(self._form_changed)
+        self.f_ch.valueChanged.connect(self._form_changed)
         self.f_onvif.valueChanged.connect(self._form_changed)
         for sb in (self.f_port, self.f_onvif):
             sb.setFixedWidth(120)
@@ -452,6 +461,7 @@ class SettingsDialog(QDialog):
         self.f_pw.setEchoMode(QLineEdit.EchoMode.Password)
         self.f_ptz.setChecked(bool(c.get("ptz", MODELS.get(model, {}).get("ptz", False))))
         self.f_port.setValue(int(setting(c, "port") or 554))
+        self.f_ch.setValue(channels_of(c))
         self.f_hd.setText(c.get("hd_path", ""))
         self.f_sd.setText(c.get("sd_path", ""))
         self.f_tr.setCurrentIndex(max(0, self.f_tr.findData(setting(c, "transport") or "auto")))
@@ -472,6 +482,8 @@ class SettingsDialog(QDialog):
             m = MODELS[model]
             c["model"] = model
             c["ptz"] = m["ptz"]
+            if "nvr" not in m:
+                c.pop("channels", None)
             if model != "custom":
                 for k in ("port", "transport", "onvif_port", "hd_path", "sd_path", "layout"):
                     c.pop(k, None)
@@ -488,6 +500,11 @@ class SettingsDialog(QDialog):
         c["username"] = self.f_user.text().strip()
         c["password"] = self.f_pw.text()
         c["ptz"] = self.f_ptz.isChecked()
+        if "nvr" in MODELS[model]:
+            if self.f_ch.value() > 1:
+                c["channels"] = min(MAX_CHANNELS, self.f_ch.value())
+            else:
+                c.pop("channels", None)
         if model == "custom":
             c["port"] = self.f_port.value()
             c["hd_path"] = self.f_hd.text().strip().lstrip("/")
@@ -507,6 +524,7 @@ class SettingsDialog(QDialog):
         self.f_help.setText(m["help"])
         self.f_user.setPlaceholderText(m["user"] or "Username")
         self.adv.setVisible(model == "custom")
+        self._form_b.setRowVisible(self.f_ch, "nvr" in m)
         names = [f"{c.get('name', '')} {lens['label']}".strip() for lens in lenses_of(c) if lens.get("hd")]
         self.f_lenses.setText("   ·   ".join(names) if names else "ยังไม่ได้ใส่ path ของสตรีม")
 
