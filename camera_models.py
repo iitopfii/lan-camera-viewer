@@ -149,12 +149,60 @@ def channels_of(cam: dict) -> int:
         return 1
 
 
+def parse_channels(text) -> list[int]:
+    """ "3, 5-7" → [3, 5, 6, 7] (เลขช่องที่อยู่นอก 1..MAX_CHANNELS หรือพิมพ์ผิดจะถูกทิ้ง)"""
+    out = set()
+    # "5 - 7" และขีดยาว (– —) นับเป็นช่วงเหมือน "5-7"
+    text = re.sub(r"\s*[-\u2010-\u2015~]\s*", "-", str(text or "").strip())
+    for part in re.split(r"[,;\s]+", text):
+        m = re.fullmatch(r"(\d{1,3})(?:-(\d{1,3}))?", part)
+        if not m:
+            continue
+        a, b = int(m.group(1)), int(m.group(2) or m.group(1))
+        out.update(i for i in range(min(a, b), max(a, b) + 1) if 1 <= i <= MAX_CHANNELS)
+    return sorted(out)
+
+
+def format_channels(nums) -> str:
+    """[3, 5, 6, 7] → "3, 5-7" """
+    nums, parts, i = sorted(set(nums)), [], 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        parts.append(str(nums[i]) if i == j else f"{nums[i]}-{nums[j]}")
+        i = j + 1
+    return ", ".join(parts)
+
+
+def skipped_channels(cam: dict) -> set[int]:
+    """ช่องของเครื่องบันทึกที่ไม่ต้องแสดง (ช่องว่างที่ไม่มีกล้องต่ออยู่)"""
+    raw = cam.get("skip_channels") or []
+    if isinstance(raw, (str, int, float)):
+        raw = [raw]
+    out = set()
+    try:
+        items = list(raw)
+    except TypeError:
+        return out
+    for item in items:  # ค่าที่แก้ไฟล์ config เองแล้วผิดบางตัว ไม่ทำให้ตัวที่ถูกหายไปด้วย
+        if isinstance(item, bool) or item is None:
+            continue
+        if isinstance(item, float):
+            if not item.is_integer():
+                continue
+            item = int(item)
+        out.update(parse_channels(item))
+    return out
+
+
 def lenses_of(cam: dict) -> list[dict]:
     if cam.get("model", "custom") != "custom" and cam.get("model") in MODELS:
         m, n = MODELS[cam["model"]], channels_of(cam)
-        if n > 1:  # เครื่องบันทึก: หนึ่งช่องภาพต่อหนึ่งช่องของเครื่อง
+        if n > 1:  # เครื่องบันทึก: หนึ่งช่องภาพต่อหนึ่งช่องของเครื่อง (ยกเว้นช่องที่สั่งข้าม)
+            skip = skipped_channels(cam)
             return [{"label": f"ช่อง {i}", "hd": m["nvr"]["hd"].format(n=i), "sd": m["nvr"]["sd"].format(n=i)}
-                    for i in range(1, n + 1)]
+                    for i in range(1, n + 1) if i not in skip]
         return m["lenses"]
     hd, sd = cam.get("hd_path", ""), cam.get("sd_path") or cam.get("hd_path", "")
     if cam.get("layout") == "split":

@@ -15,7 +15,7 @@
 - ดูผ่านเบราว์เซอร์ (มือถือ/คอมในบ้าน) แบบ HTTPS ต้องล็อกอิน เป็นวิดีโอจริงเมื่อดูกล้องตัวเดียว
 - เข้าจากนอกบ้านผ่าน `ชื่อบัญชี.cam.hypebizsoft.com` โดยไม่ต้องเปิดพอร์ต (เลือกเปิดได้) เข้ารหัสถึงเครื่องที่บ้าน เซิร์ฟเวอร์กลางเป็นแค่ทางผ่าน
 
-รุ่นที่ตั้งค่าไว้ให้แล้ว: TP-Link Tapo, Yoosee, Hikvision, EZVIZ, Dahua, Reolink, VStarcam, TVT/Hiview, V380 (รุ่นที่เปิด RTSP ได้) ส่วนรุ่นอื่นเลือก "กำหนดเอง" แล้วใส่ path ของ RTSP · เครื่องบันทึก (NVR/DVR) ของ Hikvision, Dahua, Reolink และ TVT ตั้ง "จำนวนช่อง" เพื่อแสดงกล้องทุกตัวได้
+รุ่นที่ตั้งค่าไว้ให้แล้ว: TP-Link Tapo, Yoosee, Hikvision, EZVIZ, Dahua, Reolink, VStarcam, TVT/Hiview, V380 (รุ่นที่เปิด RTSP ได้) ส่วนรุ่นอื่นเลือก "กำหนดเอง" แล้วใส่ path ของ RTSP · เครื่องบันทึก (NVR/DVR) ของ Hikvision, Dahua, Reolink และ TVT ตั้ง "จำนวนช่อง" เพื่อแสดงกล้องทุกตัว และ "ข้ามช่อง" ที่ไม่มีกล้องได้
 
 ## ดาวน์โหลด
 ไปที่ [Releases](../../releases/latest) แล้วโหลด `LANCameraViewer-Setup-x.y.z.exe` มาติดตั้ง ไม่ต้องใช้สิทธิ์แอดมิน

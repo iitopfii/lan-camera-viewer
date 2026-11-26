@@ -16,7 +16,8 @@ from PySide6.QtWidgets import (
 import theme
 from app_info import DEFAULT_RECORD_DIR, DEFAULT_SNAPSHOT_DIR
 from camera_models import (
-    AUTH_ERR, LAYOUTS, MAX_CHANNELS, MODELS, auth_hint, channels_of, lenses_of, probe_stream, rtsp_url, scan_lan, setting, split_rtsp_uri,
+    AUTH_ERR, LAYOUTS, MAX_CHANNELS, MODELS, auth_hint, channels_of, format_channels, lenses_of, parse_channels,
+    skipped_channels, probe_stream, rtsp_url, scan_lan, setting, split_rtsp_uri,
 )
 from onvif_ptz import discover_streams
 
@@ -275,6 +276,10 @@ class SettingsDialog(QDialog):
         self.f_ch.setToolTip("ถ้า IP นี้เป็นเครื่องบันทึก (NVR/DVR) ใส่จำนวนกล้องที่ต่ออยู่ โปรแกรมจะแสดงครบทุกช่อง\n"
                              "กล้องตัวเดียว = 1")
         fb.addRow(flabel("จำนวนช่อง (NVR)"), self.f_ch)
+        self.f_skip = QLineEdit()
+        self.f_skip.setPlaceholderText("เช่น 3, 5-6 (เว้นว่าง = แสดงทุกช่อง)")
+        self.f_skip.setToolTip("ช่องของเครื่องบันทึกที่ไม่มีกล้องต่ออยู่ ใส่เลขช่องคั่นด้วยจุลภาค หรือใส่เป็นช่วง เช่น 5-8")
+        fb.addRow(flabel("ข้ามช่อง"), self.f_skip)
         self._form_b = fb
         fb.addRow(flabel("ช่องบนจอ"), self.f_lenses)
         v1.addLayout(fb)
@@ -367,6 +372,8 @@ class SettingsDialog(QDialog):
         self.f_ptz.toggled.connect(self._form_changed)
         self.f_port.valueChanged.connect(self._form_changed)
         self.f_ch.valueChanged.connect(self._form_changed)
+        self.f_skip.textChanged.connect(self._form_changed)
+        self.f_skip.editingFinished.connect(self._tidy_skip)
         self.f_onvif.valueChanged.connect(self._form_changed)
         for sb in (self.f_port, self.f_onvif):
             sb.setFixedWidth(120)
@@ -462,6 +469,7 @@ class SettingsDialog(QDialog):
         self.f_ptz.setChecked(bool(c.get("ptz", MODELS.get(model, {}).get("ptz", False))))
         self.f_port.setValue(int(setting(c, "port") or 554))
         self.f_ch.setValue(channels_of(c))
+        self.f_skip.setText(format_channels(skipped_channels(c)))
         self.f_hd.setText(c.get("hd_path", ""))
         self.f_sd.setText(c.get("sd_path", ""))
         self.f_tr.setCurrentIndex(max(0, self.f_tr.findData(setting(c, "transport") or "auto")))
@@ -484,6 +492,7 @@ class SettingsDialog(QDialog):
             c["ptz"] = m["ptz"]
             if "nvr" not in m:
                 c.pop("channels", None)
+                c.pop("skip_channels", None)
             if model != "custom":
                 for k in ("port", "transport", "onvif_port", "hd_path", "sd_path", "layout"):
                     c.pop(k, None)
@@ -505,6 +514,11 @@ class SettingsDialog(QDialog):
                 c["channels"] = min(MAX_CHANNELS, self.f_ch.value())
             else:
                 c.pop("channels", None)
+            skip = [i for i in parse_channels(self.f_skip.text()) if i <= channels_of(c)]
+            if skip and "channels" in c:
+                c["skip_channels"] = skip
+            else:
+                c.pop("skip_channels", None)
         if model == "custom":
             c["port"] = self.f_port.value()
             c["hd_path"] = self.f_hd.text().strip().lstrip("/")
@@ -525,8 +539,18 @@ class SettingsDialog(QDialog):
         self.f_user.setPlaceholderText(m["user"] or "Username")
         self.adv.setVisible(model == "custom")
         self._form_b.setRowVisible(self.f_ch, "nvr" in m)
+        self._form_b.setRowVisible(self.f_skip, "nvr" in m and channels_of(c) > 1)
         names = [f"{c.get('name', '')} {lens['label']}".strip() for lens in lenses_of(c) if lens.get("hd")]
-        self.f_lenses.setText("   ·   ".join(names) if names else "ยังไม่ได้ใส่ path ของสตรีม")
+        empty = "ข้ามครบทุกช่องแล้ว ไม่มีภาพให้แสดง" if channels_of(c) > 1 else "ยังไม่ได้ใส่ path ของสตรีม"
+        self.f_lenses.setText("   ·   ".join(names) if names else empty)
+
+    def _tidy_skip(self):
+        """ออกจากช่อง "ข้ามช่อง" แล้วจัดข้อความให้เป็นรูปแบบเดียวกัน (ตัดเลขที่ใช้ไม่ได้ออก)"""
+        if self.cur is None:
+            return
+        self._loading = True
+        self.f_skip.setText(format_channels(skipped_channels(self.cur)))
+        self._loading = False
 
     def _set_result(self, text, role):
         self.result.setText(text)
@@ -774,6 +798,8 @@ class SettingsDialog(QDialog):
                     problems.append(f"\"{n}\": IP ไม่ถูกต้อง")
                 if c.get("model") == "custom" and not c.get("hd_path"):
                     problems.append(f"\"{n}\": ยังไม่มี path ของสตรีม")
+                if channels_of(c) > 1 and not lenses_of(c):
+                    problems.append(f"\"{n}\": ข้ามครบทุกช่อง – เหลือไว้อย่างน้อยหนึ่งช่อง หรือปิดการใช้งานกล้องนี้")
         if problems:
             QMessageBox.warning(self, "ยังบันทึกไม่ได้", "\n".join(dict.fromkeys(problems)))
             return
