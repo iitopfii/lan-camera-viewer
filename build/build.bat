@@ -8,7 +8,7 @@ set "PY=%LOCALAPPDATA%\TapoViewer\venv\Scripts\python.exe"
 if errorlevel 1 goto failed
 "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" /Q build\installer.iss
 if errorlevel 1 goto failed
-echo Done: dist\LANCameraViewer-Setup-1.1.6.exe
+echo Done: dist\LANCameraViewer-Setup-1.1.7.exe
 pause
 goto end
 :failed

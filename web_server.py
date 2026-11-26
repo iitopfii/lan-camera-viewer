@@ -774,7 +774,7 @@ padding:9px 14px;border-radius:11px;font-size:13px;display:none;z-index:9}
 <div class="panel" style="margin-top:14px"><h2>กล้องอื่น</h2><div class="others" id="others"></div></div>
 </section></main><div id="toast">ขาดการเชื่อมต่อ – กำลังลองใหม่…</div>
 <script>
-let cams=[],focus=null,loops={},quality='hd',player=null,fails=0;
+let cams=[],focus=null,loops={},quality='hd',player=null,fails=0,noCodec=false;
 const $=s=>document.querySelector(s);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const MS=window.ManagedMediaSource||window.MediaSource;
@@ -784,8 +784,8 @@ const net=ok=>{fails=ok?0:fails+1;$('#toast').style.display=fails>=2?'block':'no
 async function api(u,o){let r;try{r=await fetch(u,Object.assign({credentials:'same-origin'},o||{}))}catch(e){if(!(o&&o.signal&&o.signal.aborted))net(false);throw e}
  net(true);if(r.status===401){location.href='/login';throw 0}return r}
 function loop(id,img,msg,dot,key){ // ภาพทีละภาพ: ภาพก่อนโหลดเสร็จค่อยขอภาพถัดไป (เน็ตช้าก็ไม่ค้าง)
- if(loops[key])return;loops[key]=true;let since=-1,url=null;
- (async()=>{while(loops[key]){if(document.hidden){await sleep(500);continue}
+ if(loops[key])return;const me=loops[key]={};let since=-1,url=null; // me = ตัวแทนของรอบนี้: หยุดแล้วเริ่มใหม่ทันที รอบเก่าต้องเลิกเอง
+ (async()=>{while(loops[key]===me){if(document.hidden){await sleep(500);continue}
   try{const r=await api('/frame/'+id+'?since='+since);
    if(r.status===200){since=+r.headers.get('X-Frame');const b=await r.blob();const n=URL.createObjectURL(b);
     img.src=n;if(url)URL.revokeObjectURL(url);url=n;msg.textContent='';dot.className='dot live'}
@@ -841,13 +841,14 @@ function others(){const o=$('#others');o.innerHTML='';cams.forEach(c=>{const b=d
  b.appendChild(document.createTextNode(c.name));b.onclick=()=>{if(c.id!==focus)showCam(c.id)};o.appendChild(b);
  if(c.id===focus)setTimeout(()=>b.scrollIntoView({block:'nearest',inline:'center'}),0)})}
 function startFocus(){const c=cams[focus];stopLoops('f');stopVideo();$('#fimg').removeAttribute('src');
- $('#fmsg').textContent='กำลังโหลด…';$('#fdot').className='dot';
+ $('#fmsg').textContent='กำลังโหลด…';$('#fdot').className='dot';noCodec=!c.codec; // กล้องยังต่อไม่ติด = ยังไม่รู้ชนิดวิดีโอ → refresh() จะลองใหม่
+ if(document.hidden)return; // หน้าถูกซ่อนอยู่: ยังไม่ดึงภาพ – visibilitychange จะเรียก startFocus() อีกครั้งตอนกลับมา
  if(canVideo(c.codec))playVideo(focus,c.codec);else useImages(focus)}
 function showCam(id){focus=id;const c=cams[id];$('#fname').textContent=c.name;$('#ptz').style.display=c.ptz?'':'none';
  $('#fcols').className='cols'+(c.ptz?' ptz':'');$('#snap').href='/frame/'+id+'?dl=1';others();startFocus()}
 function openCam(id){stopLoops('g');$('#grid').style.display='none';$('#focus').classList.add('on');$('#back').style.display='';
  $('#layout').style.display='none';showCam(id);history.pushState({f:id},'');window.scrollTo(0,0)}
-function closeCam(){focus=null;stopLoops('f');stopVideo();$('#focus').classList.remove('on');$('#grid').style.display='';
+function closeCam(){focus=null;stopLoops('f');stopVideo();if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});$('#focus').classList.remove('on');$('#grid').style.display='';
  $('#back').style.display='none';$('#layout').style.display='';build()}
 $('#back').onclick=()=>history.back();window.onpopstate=()=>{if(focus!==null)closeCam()};
 document.querySelectorAll('.seg button').forEach(b=>b.onclick=()=>{quality=b.dataset.q;
@@ -870,8 +871,18 @@ document.addEventListener('keydown',e=>{if(focus===null||e.target.tagName==='INP
  else if(e.key==='ArrowRight')showCam((focus+1)%cams.length);
  else if(e.key==='ArrowLeft')showCam((focus+cams.length-1)%cams.length)});
 document.addEventListener('visibilitychange',()=>{if(focus===null)return;if(document.hidden)stopVideo();else startFocus()});
-(async()=>{const r=await api('/api/cams');cams=(await r.json()).cams;build();
- setInterval(async()=>{try{cams=(await (await api('/api/cams')).json()).cams;status();if(focus!==null)others()}catch(e){}},5000)})();
+// รายการกล้องเปลี่ยน (เพิ่ม/ลบ/ข้ามช่องในโปรแกรมที่บ้าน) → เลขลำดับของแต่ละช่องเลื่อน ต้องสร้างหน้าใหม่ ไม่งั้นชื่อกับภาพจะไม่ตรงกัน
+const sigOf=l=>JSON.stringify(l.map(c=>[c.name,c.device,c.crop,c.ptz]));let lastSig='';
+function refresh(n){const s=sigOf(n);
+ if(s===lastSig){cams=n;status();if(focus!==null){others();if(noCodec&&!document.hidden&&canVideo(n[focus].codec))startFocus()}return}
+ lastSig=s;const old=focus!==null?cams[focus]:null;cams=n;
+ if(!old){stopLoops('g');build();return}
+ const i=n.findIndex(c=>c.name===old.name&&c.device===old.device); // กล้องที่กำลังดูอยู่ย้ายไปลำดับไหน
+ if(i<0)history.back();
+ else if(i===focus&&n[i].crop===old.crop&&n[i].ptz===old.ptz){status();others()} // กล้องที่ดูอยู่ไม่ขยับ ไม่เปลี่ยน → ไม่ต้องต่อภาพใหม่
+ else showCam(i)}
+(async()=>{const r=await api('/api/cams');cams=(await r.json()).cams;lastSig=sigOf(cams);build();
+ setInterval(async()=>{try{refresh((await (await api('/api/cams')).json()).cams)}catch(e){}},5000)})();
 </script></body></html>"""
 for _k, _v in (("__CSS__", _CSS), ("__APP__", APP_NAME), ("__CAM__", _ICON["cam"]), ("__BACK__", _ICON["back"]),
                ("__GRID__", _ICON["grid"]), ("__OUT__", _ICON["out"]), ("__SNAP__", _ICON["snap"]), ("__FULL__", _ICON["full"])):
